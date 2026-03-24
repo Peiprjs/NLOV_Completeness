@@ -197,6 +197,131 @@ def get_stations() -> pd.DataFrame:
         raise RuntimeError(f"Error processing GTFS data: {e}") from e
 
 
+def build_trip_coordinate_dataframe(
+    merged_trips: pd.DataFrame, stations: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Enrich merged trip rows with departure and destination coordinates.
+
+    Returns all original trip columns plus:
+    - vertrek_lat, vertrek_lon
+    - bestemming_lat, bestemming_lon
+    """
+    trips = merged_trips.copy()
+
+    if "Vertrek" not in trips.columns:
+        trips["Vertrek"] = ""
+    if "Bestemming" not in trips.columns:
+        trips["Bestemming"] = ""
+
+    trips["Vertrek"] = trips["Vertrek"].fillna("").astype(str).str.strip()
+    trips["Bestemming"] = trips["Bestemming"].fillna("").astype(str).str.strip()
+
+    station_name_col = "station_name" if "station_name" in stations.columns else "stop_name"
+    station_lat_col = "lat" if "lat" in stations.columns else "stop_lat"
+    station_lon_col = "lon" if "lon" in stations.columns else "stop_lon"
+
+    required_station_cols = {station_name_col, station_lat_col, station_lon_col}
+    if not required_station_cols.issubset(set(stations.columns)):
+        trips["vertrek_lat"] = pd.NA
+        trips["vertrek_lon"] = pd.NA
+        trips["bestemming_lat"] = pd.NA
+        trips["bestemming_lon"] = pd.NA
+        return trips
+
+    station_lookup = (
+        stations[[station_name_col, station_lat_col, station_lon_col]]
+        .rename(
+            columns={
+                station_name_col: "station_name",
+                station_lat_col: "lat",
+                station_lon_col: "lon",
+            }
+        )
+        .copy()
+    )
+    station_lookup["station_name"] = station_lookup["station_name"].fillna("").astype(str).str.strip()
+    station_lookup["lat"] = pd.to_numeric(station_lookup["lat"], errors="coerce")
+    station_lookup["lon"] = pd.to_numeric(station_lookup["lon"], errors="coerce")
+    station_lookup = station_lookup[
+        station_lookup["station_name"].ne("")
+    ].drop_duplicates(subset=["station_name"], keep="first")
+
+    vertrek_lookup = station_lookup.rename(
+        columns={"station_name": "Vertrek", "lat": "vertrek_lat", "lon": "vertrek_lon"}
+    )
+    bestemming_lookup = station_lookup.rename(
+        columns={
+            "station_name": "Bestemming",
+            "lat": "bestemming_lat",
+            "lon": "bestemming_lon",
+        }
+    )
+
+    trips_with_vertrek = trips.merge(vertrek_lookup, on="Vertrek", how="left")
+    trips_with_coordinates = trips_with_vertrek.merge(bestemming_lookup, on="Bestemming", how="left")
+    return trips_with_coordinates
+
+
+def aggregate_route_counts(trip_coordinates: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate trips per route and calculate map style metrics based on route counts.
+    """
+    result_columns = [
+        "Vertrek",
+        "Bestemming",
+        "vertrek_lat",
+        "vertrek_lon",
+        "bestemming_lat",
+        "bestemming_lon",
+        "trip_count",
+        "line_weight",
+        "line_opacity",
+    ]
+
+    if trip_coordinates.empty:
+        return pd.DataFrame(columns=result_columns)
+
+    routes = trip_coordinates.copy()
+
+    text_columns = ("Vertrek", "Bestemming")
+    for column in text_columns:
+        if column not in routes.columns:
+            routes[column] = ""
+        routes[column] = routes[column].fillna("").astype(str).str.strip()
+
+    coord_columns = ("vertrek_lat", "vertrek_lon", "bestemming_lat", "bestemming_lon")
+    for column in coord_columns:
+        if column not in routes.columns:
+            routes[column] = pd.NA
+        routes[column] = pd.to_numeric(routes[column], errors="coerce")
+
+    valid_routes = routes[
+        routes["Vertrek"].ne("") & routes["Bestemming"].ne("")
+    ].dropna(subset=list(coord_columns))
+
+    if valid_routes.empty:
+        return pd.DataFrame(columns=result_columns)
+
+    aggregated_routes = (
+        valid_routes.groupby(
+            ["Vertrek", "Bestemming", "vertrek_lat", "vertrek_lon", "bestemming_lat", "bestemming_lon"],
+            as_index=False,
+        )
+        .size()
+        .rename(columns={"size": "trip_count"})
+    )
+
+    max_trip_count = int(aggregated_routes["trip_count"].max())
+    aggregated_routes["line_weight"] = 2 + (aggregated_routes["trip_count"] / max_trip_count) * 6
+    aggregated_routes["line_opacity"] = 0.25 + (aggregated_routes["trip_count"] / max_trip_count) * 0.75
+
+    aggregated_routes = aggregated_routes.sort_values(
+        by=["trip_count", "Vertrek", "Bestemming"], ascending=[False, True, True]
+    ).reset_index(drop=True)
+    return aggregated_routes[result_columns]
+
+
 def main() -> None:
     st.set_page_config(page_title="CSV to DataFrame", layout="wide")
     st.title("CSV to DataFrame Converter")

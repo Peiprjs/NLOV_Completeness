@@ -9,7 +9,13 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from app import get_stations, merge_check_in_out_transactions, read_uploaded_csv
+from app import (
+    aggregate_route_counts,
+    build_trip_coordinate_dataframe,
+    get_stations,
+    merge_check_in_out_transactions,
+    read_uploaded_csv,
+)
 
 
 BASE_SAMPLE_PATH = Path("OVChipkaart_Data/transacties_24032026113411.csv")
@@ -278,3 +284,175 @@ def test_station_data_dataframe_available_for_test_generation(stations_df: pd.Da
     assert any(column in stations_df.columns for column in ("station_name", "stop_name"))
     assert any(column in stations_df.columns for column in ("lat", "stop_lat"))
     assert any(column in stations_df.columns for column in ("lon", "stop_lon"))
+
+
+def test_build_trip_coordinate_dataframe_handles_missing_station_matches() -> None:
+    merged_trips = pd.DataFrame(
+        [
+            {"Vertrek": "Amsterdam Centraal", "Bestemming": "Rotterdam Centraal", "Status": "Complete"},
+            {"Vertrek": "Unknown Station", "Bestemming": "Rotterdam Centraal", "Status": "Incomplete"},
+            {"Vertrek": "Amsterdam Centraal", "Bestemming": "Nowhere", "Status": "Incomplete"},
+        ]
+    )
+    stations = pd.DataFrame(
+        [
+            {"station_name": "Amsterdam Centraal", "lat": 52.3791283, "lon": 4.8980833},
+            {"station_name": "Rotterdam Centraal", "lat": 51.9244201, "lon": 4.4683456},
+        ]
+    )
+
+    coordinates_df = build_trip_coordinate_dataframe(merged_trips, stations)
+
+    assert len(coordinates_df) == 3
+    assert {
+        "vertrek_lat",
+        "vertrek_lon",
+        "bestemming_lat",
+        "bestemming_lon",
+    }.issubset(set(coordinates_df.columns))
+
+    first_row = coordinates_df.iloc[0]
+    assert first_row["vertrek_lat"] == pytest.approx(52.3791283)
+    assert first_row["bestemming_lon"] == pytest.approx(4.4683456)
+
+    second_row = coordinates_df.iloc[1]
+    assert pd.isna(second_row["vertrek_lat"])
+    assert pd.isna(second_row["vertrek_lon"])
+    assert second_row["bestemming_lat"] == pytest.approx(51.9244201)
+
+    third_row = coordinates_df.iloc[2]
+    assert third_row["vertrek_lon"] == pytest.approx(4.8980833)
+    assert pd.isna(third_row["bestemming_lat"])
+    assert pd.isna(third_row["bestemming_lon"])
+
+
+def test_build_trip_coordinate_dataframe_handles_missing_departure_destination_fields() -> None:
+    merged_trips = pd.DataFrame(
+        [
+            {"Datum": "01-01-2026", "Vertrek": "Utrecht Centraal", "Bestemming": None},
+            {"Datum": "01-01-2026", "Vertrek": None, "Bestemming": "Utrecht Centraal"},
+            {"Datum": "01-01-2026", "Vertrek": "Utrecht Centraal", "Bestemming": "Utrecht Centraal"},
+        ]
+    )
+    stations = pd.DataFrame(
+        [{"station_name": "Utrecht Centraal", "lat": 52.089444, "lon": 5.110278}]
+    )
+
+    coordinates_df = build_trip_coordinate_dataframe(merged_trips, stations)
+    routes_df = aggregate_route_counts(coordinates_df)
+
+    assert len(coordinates_df) == 3
+    assert pd.isna(coordinates_df.iloc[0]["bestemming_lat"])
+    assert pd.isna(coordinates_df.iloc[1]["vertrek_lat"])
+    assert coordinates_df.iloc[2]["vertrek_lat"] == pytest.approx(52.089444)
+    assert coordinates_df.iloc[2]["bestemming_lon"] == pytest.approx(5.110278)
+
+    assert len(routes_df) == 1
+    only_route = routes_df.iloc[0]
+    assert only_route["Vertrek"] == "Utrecht Centraal"
+    assert only_route["Bestemming"] == "Utrecht Centraal"
+    assert int(only_route["trip_count"]) == 1
+
+
+def test_aggregate_route_counts_combines_duplicate_routes_and_scales_style_metrics() -> None:
+    trip_coordinates = pd.DataFrame(
+        [
+            {
+                "Vertrek": "A",
+                "Bestemming": "B",
+                "vertrek_lat": 52.0,
+                "vertrek_lon": 4.0,
+                "bestemming_lat": 51.9,
+                "bestemming_lon": 4.5,
+            },
+            {
+                "Vertrek": "A",
+                "Bestemming": "B",
+                "vertrek_lat": 52.0,
+                "vertrek_lon": 4.0,
+                "bestemming_lat": 51.9,
+                "bestemming_lon": 4.5,
+            },
+            {
+                "Vertrek": "A",
+                "Bestemming": "B",
+                "vertrek_lat": 52.0,
+                "vertrek_lon": 4.0,
+                "bestemming_lat": 51.9,
+                "bestemming_lon": 4.5,
+            },
+            {
+                "Vertrek": "B",
+                "Bestemming": "C",
+                "vertrek_lat": 51.9,
+                "vertrek_lon": 4.5,
+                "bestemming_lat": 52.1,
+                "bestemming_lon": 5.1,
+            },
+        ]
+    )
+
+    routes_df = aggregate_route_counts(trip_coordinates)
+    routes_by_key = {
+        (row["Vertrek"], row["Bestemming"]): row for _, row in routes_df.iterrows()
+    }
+
+    assert len(routes_df) == 2
+    assert int(routes_by_key[("A", "B")]["trip_count"]) == 3
+    assert int(routes_by_key[("B", "C")]["trip_count"]) == 1
+
+    dominant_route = routes_by_key[("A", "B")]
+    less_frequent_route = routes_by_key[("B", "C")]
+    assert dominant_route["line_weight"] == pytest.approx(8.0)
+    assert dominant_route["line_opacity"] == pytest.approx(1.0)
+    assert less_frequent_route["line_weight"] == pytest.approx(4.0)
+    assert less_frequent_route["line_opacity"] == pytest.approx(0.5)
+    assert dominant_route["line_weight"] > less_frequent_route["line_weight"]
+    assert dominant_route["line_opacity"] > less_frequent_route["line_opacity"]
+
+
+def test_aggregate_route_counts_ignores_rows_missing_route_data_or_coordinates() -> None:
+    trip_coordinates = pd.DataFrame(
+        [
+            {
+                "Vertrek": "A",
+                "Bestemming": "B",
+                "vertrek_lat": 52.0,
+                "vertrek_lon": 4.0,
+                "bestemming_lat": 51.9,
+                "bestemming_lon": 4.5,
+            },
+            {
+                "Vertrek": "",
+                "Bestemming": "B",
+                "vertrek_lat": 52.0,
+                "vertrek_lon": 4.0,
+                "bestemming_lat": 51.9,
+                "bestemming_lon": 4.5,
+            },
+            {
+                "Vertrek": "A",
+                "Bestemming": "",
+                "vertrek_lat": 52.0,
+                "vertrek_lon": 4.0,
+                "bestemming_lat": 51.9,
+                "bestemming_lon": 4.5,
+            },
+            {
+                "Vertrek": "A",
+                "Bestemming": "B",
+                "vertrek_lat": None,
+                "vertrek_lon": 4.0,
+                "bestemming_lat": 51.9,
+                "bestemming_lon": 4.5,
+            },
+        ]
+    )
+
+    routes_df = aggregate_route_counts(trip_coordinates)
+
+    assert len(routes_df) == 1
+    route = routes_df.iloc[0]
+    assert route["Vertrek"] == "A"
+    assert route["Bestemming"] == "B"
+    assert int(route["trip_count"]) == 1
