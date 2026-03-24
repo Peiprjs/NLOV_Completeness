@@ -137,3 +137,38 @@ def test_get_route_intermediate_points_falls_back_without_shape(monkeypatch):
     )
 
     assert points == [(52.1, 4.9), (52.2, 5.0)]
+
+
+def test_precompile_tracks_and_stations_builds_lookup_tables(monkeypatch):
+    db_path = _build_test_gtfs_db(Path("tests/test_gtfs_provider_routes.db"))
+    monkeypatch.setattr(app, "_ensure_gtfs_database", lambda: db_path)
+
+    compiled_db_path, row_count = app.precompile_tracks_and_stations_map(force=True)
+
+    assert compiled_db_path == db_path
+    assert row_count > 0
+
+    conn = sqlite3.connect(db_path)
+    route_map_rows = conn.execute("SELECT COUNT(*) FROM gtfs_station_route_map").fetchone()[0]
+    operator_map_rows = conn.execute("SELECT COUNT(*) FROM gtfs_station_operator_map").fetchone()[0]
+    alias_map_rows = conn.execute("SELECT COUNT(*) FROM gtfs_station_alias_map").fetchone()[0]
+    conn.close()
+
+    assert route_map_rows > 0
+    assert operator_map_rows > 0
+    assert alias_map_rows > 0
+
+    db_path.unlink(missing_ok=True)
+
+
+def test_precompiled_lookup_resolves_child_stop_alias(monkeypatch):
+    db_path = _build_test_gtfs_db(Path("tests/test_gtfs_provider_routes.db"))
+    app._find_gtfs_trip_match_sqlite.cache_clear()
+    app.build_station_to_operators_map.clear()
+    monkeypatch.setattr(app, "_ensure_gtfs_database", lambda: db_path)
+
+    app.precompile_tracks_and_stations_map(force=True)
+    provider = app.identify_trip_provider("Maastricht spoor 1", "Heerlen spoor 2", "Train")
+    assert provider == "Arriva"
+
+    db_path.unlink(missing_ok=True)
