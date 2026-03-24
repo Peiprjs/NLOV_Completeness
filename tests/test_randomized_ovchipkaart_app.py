@@ -226,7 +226,12 @@ def test_merge_check_in_out_transactions_with_randomized_data(stations_df: pd.Da
     assert not merged.empty
     assert expected_complete_trips <= len(merged)
     assert "Complete" in merged_statuses
-    assert {"Datum", "Vertrek", "Status"}.issubset(set(merged.columns))
+    assert {"Datum", "Vertrek", "Status", "Type", "Provider"}.issubset(set(merged.columns))
+    
+    # Check that Type column contains expected values
+    if "Type" in merged.columns:
+        types = set(merged["Type"].unique())
+        assert types.issubset({"Train", "Bus", "Metro", "Tram", "Unknown"})
 
 
 def test_station_data_dataframe_available_for_test_generation(stations_df: pd.DataFrame) -> None:

@@ -2,6 +2,7 @@ import pandas as pd
 import streamlit as st
 
 from app import (
+    apply_subscriptions_to_merged_trips,
     build_trip_map_datasets,
     merge_check_in_out_transactions,
     pdk,
@@ -22,6 +23,10 @@ if not isinstance(trips_df, pd.DataFrame) or trips_df.empty:
 merged_trips = st.session_state.get("merged_trips_df")
 if not isinstance(merged_trips, pd.DataFrame) or merged_trips.empty:
     merged_trips = merge_check_in_out_transactions(trips_df)
+    merged_trips = apply_subscriptions_to_merged_trips(
+        merged_trips,
+        st.session_state.get("subscriptions"),
+    )
     st.session_state.merged_trips_df = merged_trips
 
 if merged_trips.empty:
@@ -81,19 +86,27 @@ st.markdown("""
 *Line thickness and opacity indicate trip frequency.*
 """)
 
-all_lats = pd.concat([line_segments["source_lat"], line_segments["target_lat"]], ignore_index=True)
-all_lons = pd.concat([line_segments["source_lon"], line_segments["target_lon"]], ignore_index=True)
-center_lat = float(all_lats.mean()) if not all_lats.empty else 52.1326
-center_lon = float(all_lons.mean()) if not all_lons.empty else 5.2913
+# Get path extents for centering the map
+all_paths = line_segments["path_coords"].tolist()
+all_coords = [coord for path in all_paths for coord in path]
+if all_coords:
+    all_lons = [coord[0] for coord in all_coords]
+    all_lats = [coord[1] for coord in all_coords]
+    center_lat = float(sum(all_lats) / len(all_lats))
+    center_lon = float(sum(all_lons) / len(all_lons))
+else:
+    center_lat = 52.1326
+    center_lon = 5.2913
 
 line_layer = pdk.Layer(
-    "LineLayer",
+    "PathLayer",
     data=line_segments,
-    get_source_position="source_position",
-    get_target_position="target_position",
+    get_path="path_coords",
     get_color="line_color",
     get_width="line_width",
     width_units="pixels",
+    width_min_pixels=1,
+    width_max_pixels=15,
     pickable=True,
     auto_highlight=True,
 )
@@ -123,10 +136,8 @@ deck = pdk.Deck(
 st.pydeck_chart(deck, use_container_width=True)
 
 st.info(
-    "**Note:** Currently showing direct lines between stations. "
-    "GTFS shape data is available but requires additional optimization "
-    "to efficiently match trips to detailed route geometries. "
-    "Future enhancements will display routes following actual train tracks and roads."
+    "**Note:** Routes now follow actual train tracks and roads using GTFS shape data! "
+    "Train routes display detailed path geometry, while bus routes use direct lines."
 )
 
 st.subheader("Route Frequency Data")

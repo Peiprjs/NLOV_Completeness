@@ -3,7 +3,10 @@ import streamlit as st
 
 from app import (
     SUBSCRIPTION_OPTIONS,
+    apply_subscriptions_to_merged_trips,
     build_subscriptions_dataframe,
+    detect_subscription_from_product,
+    merge_check_in_out_transactions,
     normalize_subscription_state,
     parse_uploaded_files,
 )
@@ -73,25 +76,72 @@ if not unique_kaartnummers:
 
 st.write(f"Found {len(unique_kaartnummers)} unique card number(s)")
 
+# Auto-detect subscriptions if not already detected for current cards
+if "subscriptions" not in st.session_state or not isinstance(st.session_state.subscriptions, dict):
+    st.session_state.subscriptions = {}
+
+# Auto-detect for any new cards that don't have a subscription yet
+needs_detection = False
+for kaartnummer in unique_kaartnummers:
+    if kaartnummer not in st.session_state.subscriptions:
+        needs_detection = True
+        break
+
+if needs_detection:
+    with st.spinner("Auto-detecting subscriptions from trip history..."):
+        for kaartnummer in unique_kaartnummers:
+            if kaartnummer not in st.session_state.subscriptions:
+                detected = detect_subscription_from_product(trips_df, kaartnummer)
+                st.session_state.subscriptions[kaartnummer] = detected
+
+# Normalize to ensure all cards have valid subscriptions
 st.session_state.subscriptions = normalize_subscription_state(
     unique_kaartnummers,
-    st.session_state.get("subscriptions"),
+    st.session_state.subscriptions,
 )
 
+# Display info box about auto-detection
+st.info(
+    "ℹ️ Subscriptions have been auto-detected based on your trip history. "
+    "You can change them below if needed."
+)
+
+# Display each card with selectbox for subscription selection
 for kaartnummer in unique_kaartnummers:
     current_value = st.session_state.subscriptions[kaartnummer]
-    selected = st.selectbox(
-        f"Card {kaartnummer}",
-        SUBSCRIPTION_OPTIONS,
-        index=SUBSCRIPTION_OPTIONS.index(current_value),
-        key=f"sub_{kaartnummer}",
-    )
-    st.session_state.subscriptions[kaartnummer] = selected
+    
+    # Show detected subscription as a label
+    col1, col2 = st.columns([2, 3])
+    with col1:
+        st.write(f"**Card:** {kaartnummer}")
+    with col2:
+        selected = st.selectbox(
+            "Subscription",
+            SUBSCRIPTION_OPTIONS,
+            index=SUBSCRIPTION_OPTIONS.index(current_value),
+            key=f"sub_{kaartnummer}",
+            label_visibility="collapsed",
+        )
+        if selected != current_value:
+            st.session_state.subscriptions_changed = True
+        st.session_state.subscriptions[kaartnummer] = selected
 
+# Build and save subscriptions DataFrame
 subscriptions_df = build_subscriptions_dataframe(st.session_state.subscriptions)
 st.session_state.subscriptions_df = subscriptions_df
 
-st.subheader("Subscriptions Configuration")
-sub_options = ["Free during week off-peak hours", "Free during peak hours", "Free during weekend", "Discount during week off-peak hours", "Discount during peak hours", "Discount during weekend"]
+# Display current subscriptions configuration
+st.divider()
+st.subheader("Current Configuration")
+st.dataframe(subscriptions_df, use_container_width=True, hide_index=True)
 
-st.pills("Select the discounts that you have on this card", sub_options, selection_mode="multi", default=None)
+# Build merged trips and attach subscription per card
+base_merged_trips_df = merge_check_in_out_transactions(trips_df)
+merged_trips_df = apply_subscriptions_to_merged_trips(
+    base_merged_trips_df,
+    st.session_state.subscriptions,
+)
+st.session_state.merged_trips_df = merged_trips_df
+st.session_state.subscriptions_changed = False
+
+st.success("✅ Subscriptions configured and saved to session state.")
