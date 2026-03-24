@@ -1,10 +1,7 @@
-import io
 import random
-import zipfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
 
 import pandas as pd
 import pytest
@@ -14,6 +11,7 @@ from app import (
     build_trip_coordinate_dataframe,
     get_stations,
     merge_check_in_out_transactions,
+    order_sidebar_options,
     read_uploaded_csv,
 )
 
@@ -181,56 +179,10 @@ def _extract_station_row_count(stations_df: pd.DataFrame) -> int:
     return int(stations_df.shape[0])
 
 
-def _build_mock_gtfs_zip_from_sample() -> bytes:
-    sample_df = _load_sample_structure()
-    vertrek = sample_df["Vertrek"].fillna("").astype(str).tolist()
-    bestemming = sample_df["Bestemming"].fillna("").astype(str).tolist()
-    station_names = sorted({name.strip() for name in [*vertrek, *bestemming] if name.strip()})
-
-    stops_rows = []
-    base_lat = 50.85
-    base_lon = 5.95
-    for idx, station_name in enumerate(station_names):
-        # Deterministic pseudo coordinates in the Netherlands-ish bounding box.
-        lat = base_lat + (idx % 20) * 0.02
-        lon = base_lon + (idx % 20) * 0.025
-        stops_rows.append(
-            {
-                "stop_id": f"NL:STOP:{idx:05d}",
-                "stop_name": station_name,
-                "stop_lat": round(lat, 6),
-                "stop_lon": round(lon, 6),
-                "location_type": 1,
-                "parent_station": "",
-            }
-        )
-
-    stops_df = pd.DataFrame(stops_rows)
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("stops.txt", stops_df.to_csv(index=False))
-    return buffer.getvalue()
-
-
 @pytest.fixture(scope="session")
 def stations_df() -> pd.DataFrame:
-    class _FakeResponse(io.BytesIO):
-        def __enter__(self) -> "_FakeResponse":
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            self.close()
-
-    gtfs_zip_payload = _build_mock_gtfs_zip_from_sample()
-
-    def _fake_urlopen(*args, **kwargs) -> _FakeResponse:
-        return _FakeResponse(gtfs_zip_payload)
-
     get_stations.clear()
-    with patch("app.urlopen", side_effect=_fake_urlopen):
-        stations = get_stations()
-    get_stations.clear()
-    return stations
+    return get_stations()
 
 
 def test_randomized_csv_generation_matches_ovchipkaart_structure(stations_df: pd.DataFrame) -> None:
@@ -284,6 +236,18 @@ def test_station_data_dataframe_available_for_test_generation(stations_df: pd.Da
     assert any(column in stations_df.columns for column in ("station_name", "stop_name"))
     assert any(column in stations_df.columns for column in ("lat", "stop_lat"))
     assert any(column in stations_df.columns for column in ("lon", "stop_lon"))
+
+
+def test_order_sidebar_options_places_settings_last() -> None:
+    ordered = order_sidebar_options(
+        ["Settings", "Merged Trips Data", "Station Data", "Visualization"]
+    )
+    assert ordered == ["Merged Trips Data", "Station Data", "Visualization", "Settings"]
+
+    ordered_with_duplicates = order_sidebar_options(
+        ["Settings", "Overview", "Settings", "Details"]
+    )
+    assert ordered_with_duplicates == ["Overview", "Details", "Settings", "Settings"]
 
 
 def test_build_trip_coordinate_dataframe_handles_missing_station_matches() -> None:
@@ -409,6 +373,83 @@ def test_aggregate_route_counts_combines_duplicate_routes_and_scales_style_metri
     assert less_frequent_route["line_opacity"] == pytest.approx(0.5)
     assert dominant_route["line_weight"] > less_frequent_route["line_weight"]
     assert dominant_route["line_opacity"] > less_frequent_route["line_opacity"]
+
+
+def test_aggregate_route_counts_normalized_style_values_are_reasonable() -> None:
+    trip_coordinates = pd.DataFrame(
+        [
+            {
+                "Vertrek": "A",
+                "Bestemming": "B",
+                "vertrek_lat": 52.0,
+                "vertrek_lon": 4.0,
+                "bestemming_lat": 51.9,
+                "bestemming_lon": 4.5,
+            },
+            {
+                "Vertrek": "A",
+                "Bestemming": "B",
+                "vertrek_lat": 52.0,
+                "vertrek_lon": 4.0,
+                "bestemming_lat": 51.9,
+                "bestemming_lon": 4.5,
+            },
+            {
+                "Vertrek": "B",
+                "Bestemming": "C",
+                "vertrek_lat": 51.9,
+                "vertrek_lon": 4.5,
+                "bestemming_lat": 52.1,
+                "bestemming_lon": 5.1,
+            },
+            {
+                "Vertrek": "C",
+                "Bestemming": "D",
+                "vertrek_lat": 52.1,
+                "vertrek_lon": 5.1,
+                "bestemming_lat": 52.3,
+                "bestemming_lon": 5.4,
+            },
+            {
+                "Vertrek": "C",
+                "Bestemming": "D",
+                "vertrek_lat": 52.1,
+                "vertrek_lon": 5.1,
+                "bestemming_lat": 52.3,
+                "bestemming_lon": 5.4,
+            },
+            {
+                "Vertrek": "C",
+                "Bestemming": "D",
+                "vertrek_lat": 52.1,
+                "vertrek_lon": 5.1,
+                "bestemming_lat": 52.3,
+                "bestemming_lon": 5.4,
+            },
+            {
+                "Vertrek": "C",
+                "Bestemming": "D",
+                "vertrek_lat": 52.1,
+                "vertrek_lon": 5.1,
+                "bestemming_lat": 52.3,
+                "bestemming_lon": 5.4,
+            },
+        ]
+    )
+
+    routes_df = aggregate_route_counts(trip_coordinates)
+
+    assert not routes_df.empty
+    assert routes_df["trip_count"].tolist() == sorted(
+        routes_df["trip_count"].tolist(), reverse=True
+    )
+    assert routes_df["line_weight"].between(2.0, 8.0).all()
+    assert routes_df["line_opacity"].between(0.25, 1.0).all()
+
+    top_route = routes_df.iloc[0]
+    assert int(top_route["trip_count"]) == 4
+    assert top_route["line_weight"] == pytest.approx(8.0)
+    assert top_route["line_opacity"] == pytest.approx(1.0)
 
 
 def test_aggregate_route_counts_ignores_rows_missing_route_data_or_coordinates() -> None:
