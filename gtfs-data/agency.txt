@@ -1,0 +1,42 @@
+agency_id,agency_name,agency_url,agency_timezone,agency_phone
+ALLGO,allGo (Keolis),http://www.allgobus.nl,Europe/Amsterdam,003188-0331360
+ARR,Arriva,https://www.arriva.nl,Europe/Amsterdam,0031800-0232545
+BRAVO,Bravo,http://www.example.com,Europe/Amsterdam,
+BRAVO:ARR,Bravo (Arriva),https://www.bravo.info,Europe/Amsterdam,0031800-0232545
+BRAVO:CXX,Bravo (Hermes),http://www.bravo.info,Europe/Amsterdam,0031800-0222277
+BRENG,Breng,http://www.breng.nl,Europe/Amsterdam,003126-2142140
+CXX,Connexxion,http://www.connexxion.nl,Europe/Amsterdam,0031900-2666399
+DELIJN,De Lijn,http://www.delijn.be,Europe/Amsterdam,0031900-7289965
+DOEKSEN,Rederij Doeksen,https://www.rederij-doeksen.nl/,Europe/Amsterdam,+31889000888
+EBS,EBS,https://www.rrreis.nl,Europe/Amsterdam,085-2085212
+GVB,GVB,http://www.gvb.nl/klantenservice,Europe/Amsterdam,0900-80 11
+HERMES,Hermes,http://www.hermes.nl,Europe/Amsterdam,0031800-0222277
+HTM,HTM,https://htm.nl/klantenservice/,Europe/Amsterdam,+319004864636
+IFF:ARRIVA,Arriva,https://www.arriva.nl,Europe/Amsterdam,0031900-2022022
+IFF:BLAUWNET_A,Blauwnet Arriva,http://www.blauwnet.nl,Europe/Amsterdam,0031314350111
+IFF:BLAUWNET_K,Blauwnet Keolis,http://www.blauwnet.nl,Europe/Amsterdam,0031314350111
+IFF:DB,DB,http://www.db.de,Europe/Amsterdam,+491806996633
+IFF:EUROBAHN,Eurobahn,https://www.eurobahn.de,Europe/Amsterdam,+4934191354042
+IFF:EU_SLEEPER,European Sleeper,https://www.europeansleeper.eu/,Europe/Amsterdam,0031302035833
+IFF:GV,GoVolta,http://www.govolta.nl,Europe/Amsterdam,""
+IFF:NMBS,NMBS,http://www.nmbs.be,Europe/Amsterdam,+3225282828
+IFF:NS,NS,http://www.ns.nl,Europe/Amsterdam,003130-7515155
+IFF:NS_INT,NS Int,http://www.nsinternational.nl,Europe/Amsterdam,0031302300023
+IFF:R-NET_NS,R-net NS,http://www.ns.nl,Europe/Amsterdam,003130-7515155
+IFF:R-NET_QB,R-net Qbuzz,http://www.qbuzz.nl,Europe/Amsterdam,0031900-7289965
+IFF:RRREIS_A,RRReis Arriva,https://www.rrreis.nl,Europe/Amsterdam,+31852085212
+IFF:RRREIS_K,RRReis Keolis,https://www.rrreis.nl,Europe/Amsterdam,+31852085212
+IFF:VIAS,VIAS,https://www.vias-online.de/,Europe/Amsterdam,+49069450099650
+MEERPLUS,MeerPlus,http://www.meerplus.nl,Europe/Amsterdam,+31888628208
+QBUZZ,Qbuzz,http://www.qbuzz.nl,Europe/Amsterdam,0031900-7289965
+QBUZZ:Branding:WATERSHUTTLE,WaterShuttle,http://www.example.com,Europe/Amsterdam,
+RET,RET,http://www.ret.nl,Europe/Amsterdam,0031900-5006010
+RRREIS,RRReis,https://www.rrreis.nl/,Europe/Amsterdam,003185-2085212
+TESO,TESO,https://teso.nl/,Europe/Amsterdam,+31222369600
+TRANSDEV,Transdev,http://www.transdev.nl,Europe/Amsterdam,00319008686
+UOV,U-OV,http://www.u-ov.info,Europe/Amsterdam,0031900-5252241
+WATERBUS,Waterbus,http://www.example.com,Europe/Amsterdam,
+WATERSHUTTLE,WaterShuttle,https://watershuttle.nl/,Europe/Amsterdam,+31850407333
+WPD,Wagenborg Passagiersdiensten,https://www.wpd.nl/,Europe/Amsterdam,+31881031000
+WSF,Westerschelde Ferry,https://westerscheldeferry.nl/,Europe/Amsterdam,+31850401800
+ZTM:Operator:ZTM,ZTM,http://www.example.com,Europe/Amsterdam,
