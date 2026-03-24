@@ -161,3 +161,4 @@ cython_debug/
 /OVChipkaart_Data
 /.idea
 gtfs-data/gtfs.db
+/gtfs-data
