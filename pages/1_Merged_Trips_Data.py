@@ -1,7 +1,7 @@
 import pandas as pd
 import streamlit as st
 
-from app import merge_check_in_out_transactions
+from app import apply_subscriptions_to_merged_trips, merge_check_in_out_transactions
 
 
 st.title("Merged Trips Data")
@@ -12,6 +12,10 @@ if not isinstance(trips_df, pd.DataFrame) or trips_df.empty:
     st.stop()
 
 merged_trips = merge_check_in_out_transactions(trips_df)
+merged_trips = apply_subscriptions_to_merged_trips(
+    merged_trips,
+    st.session_state.get("subscriptions"),
+)
 st.session_state.merged_trips_df = merged_trips
 
 if merged_trips.empty:
