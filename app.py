@@ -832,6 +832,16 @@ def render_settings_view() -> None:
 
     st.write(f"Found {len(unique_kaartnummers)} unique card number(s)")
 
+    if "subscriptions" not in st.session_state or not isinstance(st.session_state.subscriptions, dict):
+        st.session_state.subscriptions = {}
+
+    for kaartnummer in unique_kaartnummers:
+        if kaartnummer not in st.session_state.subscriptions:
+            st.session_state.subscriptions[kaartnummer] = detect_subscription_from_product(
+                trips_df,
+                kaartnummer,
+            )
+
     st.session_state.subscriptions = normalize_subscription_state(
         unique_kaartnummers,
         st.session_state.get("subscriptions"),
@@ -852,6 +862,13 @@ def render_settings_view() -> None:
 
     st.subheader("Subscriptions Configuration")
     st.dataframe(subscriptions_df, use_container_width=True)
+
+    merged_trips = merge_check_in_out_transactions(trips_df)
+    merged_trips = apply_subscriptions_to_merged_trips(
+        merged_trips,
+        st.session_state.subscriptions,
+    )
+    st.session_state.merged_trips_df = merged_trips
 
 
 def render_merged_trips_view() -> None:
@@ -1235,6 +1252,39 @@ def find_train_route_shape(vertrek_name: str, bestemming_name: str, stations_df:
     return pd.DataFrame()
 
 
+def _gtfs_route_types_for_trip_type(trip_type: str) -> tuple[int, ...]:
+    trip_type_normalized = str(trip_type).strip().casefold()
+    if trip_type_normalized == "train":
+        return (2,)
+    if trip_type_normalized == "metro":
+        return (1,)
+    if trip_type_normalized == "tram":
+        return (0,)
+    if trip_type_normalized == "bus":
+        return (3,)
+    return tuple()
+
+
+def _ensure_gtfs_indexes(conn: sqlite3.Connection) -> None:
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_stops_id ON stops(stop_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_stops_name ON stops(stop_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_stops_name_lower ON stops(LOWER(stop_name))")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_stops_parent ON stops(parent_station)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_id ON trips(trip_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_shape ON trips(shape_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_route ON trips(route_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_routes_id ON routes(route_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_routes_type ON routes(route_type)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_agency_id ON agency(agency_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_stop_times_trip ON stop_times(trip_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_stop_times_stop ON stop_times(stop_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_stop_times_seq ON stop_times(trip_id, stop_sequence)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_stop_times_stop_trip_seq ON stop_times(stop_id, trip_id, stop_sequence)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_shapes_id ON shapes(shape_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_shapes_seq ON shapes(shape_id, shape_pt_sequence)")
+    conn.commit()
+
+
 def _ensure_gtfs_database() -> Path:
     """
     Ensure GTFS database exists and is up to date.
@@ -1243,15 +1293,19 @@ def _ensure_gtfs_database() -> Path:
     Returns:
         Path to the SQLite database file
     """
-    gtfs_dir = Path("gtfs-data")
+    gtfs_dir = Path(__file__).resolve().parent / "gtfs-data"
     db_path = gtfs_dir / "gtfs.db"
     
-    # Check if database needs to be created
     if db_path.exists():
+        try:
+            conn = sqlite3.connect(db_path)
+            _ensure_gtfs_indexes(conn)
+            conn.close()
+        except Exception:
+            pass
         return db_path
     
     print("Creating GTFS database from text files (this may take 30-60 seconds)...")
-    
     conn = sqlite3.connect(db_path)
     
     # Import stops
@@ -1259,8 +1313,6 @@ def _ensure_gtfs_database() -> Path:
     if stops_path.exists():
         df_stops = pd.read_csv(stops_path)
         df_stops.to_sql("stops", conn, if_exists="replace", index=False)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_stops_name ON stops(stop_name)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_stops_id ON stops(stop_id)")
         print(f"  ✓ Imported {len(df_stops)} stops")
     
     # Import trips
@@ -1268,9 +1320,6 @@ def _ensure_gtfs_database() -> Path:
     if trips_path.exists():
         df_trips = pd.read_csv(trips_path)
         df_trips.to_sql("trips", conn, if_exists="replace", index=False)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_shape ON trips(shape_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_id ON trips(trip_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_trips_route ON trips(route_id)")
         print(f"  ✓ Imported {len(df_trips)} trips")
         
     # Import routes
@@ -1278,7 +1327,6 @@ def _ensure_gtfs_database() -> Path:
     if routes_path.exists():
         df_routes = pd.read_csv(routes_path)
         df_routes.to_sql("routes", conn, if_exists="replace", index=False)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_routes_id ON routes(route_id)")
         print(f"  ✓ Imported {len(df_routes)} routes")
 
     # Import agency
@@ -1286,7 +1334,6 @@ def _ensure_gtfs_database() -> Path:
     if agency_path.exists():
         df_agency = pd.read_csv(agency_path)
         df_agency.to_sql("agency", conn, if_exists="replace", index=False)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_agency_id ON agency(agency_id)")
         print(f"  ✓ Imported {len(df_agency)} agencies")
     
     # Import stop_times (large file - import in chunks)
@@ -1297,9 +1344,6 @@ def _ensure_gtfs_database() -> Path:
         for chunk in pd.read_csv(stop_times_path, chunksize=chunk_size):
             chunk.to_sql("stop_times", conn, if_exists="append", index=False)
             total_rows += len(chunk)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_stop_times_trip ON stop_times(trip_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_stop_times_stop ON stop_times(stop_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_stop_times_seq ON stop_times(trip_id, stop_sequence)")
         print(f"  ✓ Imported {total_rows} stop_times")
     
     # Import shapes (large file - import in chunks)
@@ -1310,15 +1354,98 @@ def _ensure_gtfs_database() -> Path:
         for chunk in pd.read_csv(shapes_path, chunksize=chunk_size):
             chunk.to_sql("shapes", conn, if_exists="append", index=False)
             total_rows += len(chunk)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_shapes_id ON shapes(shape_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_shapes_seq ON shapes(shape_id, shape_pt_sequence)")
         print(f"  ✓ Imported {total_rows} shape points")
     
-    conn.commit()
+    _ensure_gtfs_indexes(conn)
     conn.close()
     print("✓ GTFS database created successfully!")
     
     return db_path
+
+
+@functools.lru_cache(maxsize=4096)
+def _find_gtfs_trip_match_sqlite(
+    vertrek_name: str,
+    bestemming_name: str,
+    trip_type: str = "",
+    ensure_database: bool = False,
+) -> tuple[str, Any, Any, Any]:
+    vertrek_clean = str(vertrek_name).strip().lower()
+    bestemming_clean = str(bestemming_name).strip().lower()
+    if not vertrek_clean or not bestemming_clean:
+        return "", None, None, None
+
+    route_types = _gtfs_route_types_for_trip_type(trip_type)
+    route_filter = ""
+    route_params: list[Any] = []
+    if route_types:
+        route_filter = f"AND r.route_type IN ({','.join('?' for _ in route_types)})"
+        route_params.extend(route_types)
+
+    try:
+        if ensure_database:
+            db_path = _ensure_gtfs_database()
+        else:
+            candidate_db_path = Path(__file__).resolve().parent / "gtfs-data" / "gtfs.db"
+            if not candidate_db_path.exists():
+                return "", None, None, None
+            db_path = candidate_db_path
+        conn = sqlite3.connect(db_path)
+        query = f"""
+            WITH vertrek_candidates AS (
+                SELECT stop_id FROM stops WHERE LOWER(stop_name) = ?
+                UNION
+                SELECT s.stop_id
+                FROM stops s
+                JOIN stops p ON CAST(s.parent_station AS TEXT) = CAST(p.stop_id AS TEXT)
+                WHERE LOWER(p.stop_name) = ?
+            ),
+            bestemming_candidates AS (
+                SELECT stop_id FROM stops WHERE LOWER(stop_name) = ?
+                UNION
+                SELECT s.stop_id
+                FROM stops s
+                JOIN stops p ON CAST(s.parent_station AS TEXT) = CAST(p.stop_id AS TEXT)
+                WHERE LOWER(p.stop_name) = ?
+            ),
+            candidate_trips AS (
+                SELECT
+                    t.trip_id,
+                    t.route_id,
+                    t.shape_id,
+                    st1.stop_sequence AS seq1,
+                    st2.stop_sequence AS seq2,
+                    st1.shape_dist_traveled AS dist1,
+                    st2.shape_dist_traveled AS dist2,
+                    COALESCE(st2.shape_dist_traveled - st1.shape_dist_traveled, st2.stop_sequence - st1.stop_sequence) AS route_span
+                FROM stop_times st1
+                JOIN stop_times st2 ON st1.trip_id = st2.trip_id AND st1.stop_sequence < st2.stop_sequence
+                JOIN vertrek_candidates vc ON vc.stop_id = st1.stop_id
+                JOIN bestemming_candidates bc ON bc.stop_id = st2.stop_id
+                JOIN trips t ON t.trip_id = st1.trip_id
+            )
+            SELECT
+                COALESCE(a.agency_name, '') AS agency_name,
+                c.shape_id,
+                c.dist1,
+                c.dist2
+            FROM candidate_trips c
+            JOIN routes r ON r.route_id = c.route_id
+            LEFT JOIN agency a ON a.agency_id = r.agency_id
+            WHERE 1=1
+            {route_filter}
+            ORDER BY c.route_span ASC
+            LIMIT 1
+        """
+        params = [vertrek_clean, vertrek_clean, bestemming_clean, bestemming_clean] + route_params
+        result = conn.execute(query, params).fetchone()
+        conn.close()
+        if result is None:
+            return "", None, None, None
+        return result
+    except Exception as error:
+        print(f"Error finding GTFS trip match: {error}")
+        return "", None, None, None
 
 
 def get_route_intermediate_points(vertrek_name: str, bestemming_name: str, 
@@ -1340,62 +1467,23 @@ def get_route_intermediate_points(vertrek_name: str, bestemming_name: str,
     Returns:
         List of (lat, lon) tuples representing the route path
     """
-    # For non-train routes, return direct line
-    if trip_type not in ("Train", "Metro", "Tram"):
+    if trip_type not in ("Train", "Metro", "Tram", "Bus"):
         return [(vertrek_lat, vertrek_lon), (bestemming_lat, bestemming_lon)]
     
     try:
         db_path = _ensure_gtfs_database()
         conn = sqlite3.connect(db_path)
-        
-        # Find all stop IDs for departure station (multiple platforms have same name)
-        cursor = conn.execute("""
-            SELECT stop_id FROM stops 
-            WHERE stop_name = ?
-        """, (vertrek_name,))
-        vertrek_stops = [row[0] for row in cursor.fetchall()]
-        
-        cursor = conn.execute("""
-            SELECT stop_id FROM stops 
-            WHERE stop_name = ?
-        """, (bestemming_name,))
-        bestemming_stops = [row[0] for row in cursor.fetchall()]
-        
-        if not vertrek_stops or not bestemming_stops:
+
+        _, shape_id, dist1, dist2 = _find_gtfs_trip_match_sqlite(
+            vertrek_name,
+            bestemming_name,
+            trip_type,
+            ensure_database=True,
+        )
+        if shape_id is None:
             conn.close()
             return [(vertrek_lat, vertrek_lon), (bestemming_lat, bestemming_lon)]
-        
-        # Find trips that connect these stations (checking all platform combinations)
-        placeholders_v = ','.join('?' * len(vertrek_stops))
-        placeholders_b = ','.join('?' * len(bestemming_stops))
-        
-        query = f"""
-            SELECT DISTINCT t.trip_id, t.shape_id, 
-                   st1.stop_sequence as seq1, 
-                   st2.stop_sequence as seq2,
-                   st1.shape_dist_traveled as dist1,
-                   st2.shape_dist_traveled as dist2
-            FROM trips t
-            JOIN stop_times st1 ON t.trip_id = st1.trip_id
-            JOIN stop_times st2 ON t.trip_id = st2.trip_id
-            WHERE st1.stop_id IN ({placeholders_v})
-              AND st2.stop_id IN ({placeholders_b})
-              AND st1.stop_sequence < st2.stop_sequence
-              AND t.shape_id IS NOT NULL
-            ORDER BY (st2.stop_sequence - st1.stop_sequence)
-            LIMIT 1
-        """
-        
-        cursor = conn.execute(query, vertrek_stops + bestemming_stops)
-        trip_result = cursor.fetchone()
-        
-        if not trip_result:
-            conn.close()
-            return [(vertrek_lat, vertrek_lon), (bestemming_lat, bestemming_lon)]
-        
-        trip_id, shape_id, seq1, seq2, dist1, dist2 = trip_result
-        
-        # Get shape points for this trip
+
         if dist1 is not None and dist2 is not None:
             cursor = conn.execute("""
                 SELECT shape_pt_lat, shape_pt_lon
@@ -1411,12 +1499,15 @@ def get_route_intermediate_points(vertrek_name: str, bestemming_name: str,
                 ORDER BY shape_pt_sequence
             """, (shape_id,))
         
-        shape_points = cursor.fetchall()
+        shape_points = [
+            (float(lat), float(lon))
+            for lat, lon in cursor.fetchall()
+            if lat is not None and lon is not None
+        ]
         conn.close()
         
         if len(shape_points) >= 2:
-            # Return shape points as list of (lat, lon) tuples
-            return [(float(lat), float(lon)) for lat, lon in shape_points]
+            return shape_points
         
     except Exception as e:
         print(f"Error fetching GTFS shape data: {e}")
@@ -1435,110 +1526,41 @@ def build_station_to_operators_map() -> dict[str, set[str]]:
         Dictionary mapping station name (lowercase) to set of operator names
     """
     try:
-        # Load GTFS data
-        stops_df = get_gtfs_stops()
-        routes_df = get_gtfs_routes()
-        agencies_df = get_gtfs_agencies()
-        trips_df = get_gtfs_trips()
-        
-        if stops_df.empty or routes_df.empty or agencies_df.empty or trips_df.empty:
+        db_path = Path(__file__).resolve().parent / "gtfs-data" / "gtfs.db"
+        if not db_path.exists():
             return {}
-        
-        # Filter for train routes only (route_type == 2)
-        train_routes = routes_df[routes_df['route_type'] == 2].copy()
-        
-        # Create agency_id -> agency_name mapping
-        agency_map = dict(zip(agencies_df['agency_id'], agencies_df['agency_name']))
-        
-        # Map route_id -> agency_name
-        train_routes['agency_name'] = train_routes['agency_id'].map(agency_map)
-        route_to_agency = dict(zip(train_routes['route_id'], train_routes['agency_name']))
-        
-        # Get parent stations (location_type == 1 are station areas)
-        stations = stops_df[stops_df['location_type'] == 1].copy()
-        
-        # Build station name -> operators map using route descriptions
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("""
+            SELECT DISTINCT
+                LOWER(COALESCE(parent.stop_name, child.stop_name)) AS station_name,
+                agency.agency_name
+            FROM stop_times st
+            JOIN stops child ON child.stop_id = st.stop_id
+            LEFT JOIN stops parent ON CAST(child.parent_station AS TEXT) = CAST(parent.stop_id AS TEXT)
+            JOIN trips trip ON trip.trip_id = st.trip_id
+            JOIN routes route ON route.route_id = trip.route_id
+            LEFT JOIN agency agency ON agency.agency_id = route.agency_id
+            WHERE route.route_type = 2
+              AND agency.agency_name IS NOT NULL
+              AND TRIM(agency.agency_name) != ''
+        """)
         station_operators: dict[str, set[str]] = {}
-        
-        # Parse route descriptions to extract station names
-        # Format: "Station1 <-> Station2" or "Station1 -> Station2"
-        for _, route in train_routes.iterrows():
-            route_desc = str(route.get('route_long_name', ''))
-            agency_name = route['agency_name']
-            
-            if not agency_name or pd.isna(agency_name):
+        for station_name, agency_name in cursor.fetchall():
+            if not station_name or not agency_name:
                 continue
-                
-            # Extract station names from route descriptions
-            # Common patterns: "Kerkrade Centrum <-> Maastricht Randwyck ST32000"
-            if '<->' in route_desc:
-                parts = route_desc.split('<->')
-            elif '->' in route_desc:
-                parts = route_desc.split('->')
-            else:
-                parts = [route_desc]
-            
-            for part in parts:
-                # Clean station name: remove codes like ST32000
-                station = part.strip()
-                station = station.split('ST')[0].strip()  # Remove ST codes
-                station = station.split('IC')[0].strip()  # Remove IC codes
-                
-                if station:
-                    station_lower = station.lower()
-                    if station_lower not in station_operators:
-                        station_operators[station_lower] = set()
-                    station_operators[station_lower].add(agency_name)
-        
-        # Also map from stops.txt station names to operators
-        for _, station in stations.iterrows():
-            station_name = str(station.get('stop_name', '')).strip()
-            if not station_name:
-                continue
-            
-            station_lower = station_name.lower()
-            # For stations in stops.txt, we need to find which routes serve them
-            # This is harder without loading stop_times, so we'll use heuristics
-            
-            # If station name not yet mapped, try to infer from location
-            if station_lower not in station_operators:
-                station_operators[station_lower] = set()
-        
+            station_operators.setdefault(str(station_name), set()).add(str(agency_name))
+        conn.close()
         return station_operators
-        
     except Exception as e:
         print(f"Error building station-to-operators map: {e}")
         return {}
 
 
 @functools.lru_cache(maxsize=1024)
-def identify_trip_provider_sqlite(vertrek_name: str, bestemming_name: str) -> str:
-    vertrek_clean = str(vertrek_name).strip().lower()
-    bestemming_clean = str(bestemming_name).strip().lower()
-    if not vertrek_clean or not bestemming_clean:
-        return ""
-    try:
-        db_path = _ensure_gtfs_database()
-        conn = sqlite3.connect(db_path)
-        query = """
-            SELECT a.agency_name
-            FROM stops v
-            JOIN stops b
-            JOIN stop_times st1 ON st1.stop_id = v.stop_id
-            JOIN stop_times st2 ON st2.stop_id = b.stop_id AND st1.trip_id = st2.trip_id
-            JOIN trips t ON t.trip_id = st1.trip_id
-            JOIN routes r ON r.route_id = t.route_id
-            LEFT JOIN agency a ON a.agency_id = r.agency_id
-            WHERE LOWER(v.stop_name) = ? AND LOWER(b.stop_name) = ? AND st1.stop_sequence != st2.stop_sequence
-            LIMIT 1
-        """
-        cursor = conn.execute(query, (vertrek_clean, bestemming_clean))
-        result = cursor.fetchone()
-        conn.close()
-        if result and result[0]:
-            return result[0]
-    except Exception as e:
-        print(f"Error resolving agency via SQLite: {e}")
+def identify_trip_provider_sqlite(vertrek_name: str, bestemming_name: str, trip_type: str = "") -> str:
+    agency_name, _, _, _ = _find_gtfs_trip_match_sqlite(vertrek_name, bestemming_name, trip_type)
+    if agency_name:
+        return str(agency_name)
     return ""
 
 
@@ -1558,12 +1580,10 @@ def identify_trip_provider(vertrek: str, bestemming: str, trip_type: str) -> str
         Provider name or "Unknown"
     """
     if trip_type == "Train":
-        # First try exact train operator match from SQLite
-        db_provider = identify_trip_provider_sqlite(vertrek, bestemming)
+        db_provider = identify_trip_provider_sqlite(vertrek, bestemming, "Train")
         if db_provider:
             return db_provider
             
-        # Fallback to identify train operator from GTFS map
         station_map = build_station_to_operators_map()
         
         vertrek_clean = str(vertrek).strip().lower()
@@ -1595,25 +1615,13 @@ def identify_trip_provider(vertrek: str, bestemming: str, trip_type: str) -> str
                 return sorted(non_ns)[0]
             return sorted(bestemming_operators)[0]
         
-        # Fallback: Use regional heuristics for known Arriva/other operator regions
-        # Southern Limburg (Maastricht, Heerlen, Sittard, Kerkrade area) = Arriva
-        south_limburg = ['maastricht', 'heerlen', 'sittard', 'kerkrade', 'landgraaf', 
-                        'hoensbroek', 'geleen', 'valkenburg']
-        if any(city in vertrek_clean for city in south_limburg) or \
-           any(city in bestemming_clean for city in south_limburg):
-            return "Arriva"
-        
-        # Northern lines (Groningen, Leeuwarden area) = Arriva
-        north_stations = ['groningen', 'leeuwarden', 'assen', 'emmen', 'winschoten', 
-                         'delfzijl', 'roodeschool', 'veendam']
-        if any(city in vertrek_clean for city in north_stations) or \
-           any(city in bestemming_clean for city in north_stations):
-            return "Arriva"
-        
         # Default to NS (most common)
         return "NS"
         
     elif trip_type == "Bus":
+        db_provider = identify_trip_provider_sqlite(vertrek, bestemming, "Bus")
+        if db_provider:
+            return db_provider
         # Try to extract city name from bus stop
         vertrek_str = str(vertrek).strip()
         if "," in vertrek_str:
@@ -1629,6 +1637,12 @@ def identify_trip_provider(vertrek: str, bestemming: str, trip_type: str) -> str
             elif "utrecht" in city_lower:
                 return "U-OV"
         return "Regional Bus"
+    elif trip_type == "Metro":
+        db_provider = identify_trip_provider_sqlite(vertrek, bestemming, "Metro")
+        return db_provider or "Unknown"
+    elif trip_type == "Tram":
+        db_provider = identify_trip_provider_sqlite(vertrek, bestemming, "Tram")
+        return db_provider or "Unknown"
     
     return "Unknown"
 

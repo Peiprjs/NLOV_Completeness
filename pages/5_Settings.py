@@ -102,7 +102,7 @@ st.session_state.subscriptions = normalize_subscription_state(
 
 # Display info box about auto-detection
 st.info(
-    "ℹ️ Subscriptions have been auto-detected based on your trip history. "
+    "Subscriptions have been auto-detected based on your trip history. "
     "You can change them below if needed."
 )
 
@@ -143,5 +143,3 @@ merged_trips_df = apply_subscriptions_to_merged_trips(
 )
 st.session_state.merged_trips_df = merged_trips_df
 st.session_state.subscriptions_changed = False
-
-st.success("✅ Subscriptions configured and saved to session state.")
