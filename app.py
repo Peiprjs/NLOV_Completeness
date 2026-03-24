@@ -49,12 +49,45 @@ def _cache_data(func: Callable[..., pd.DataFrame]) -> Callable[..., pd.DataFrame
     return st.cache_data(func)
 
 
+def detect_trip_type(vertrek: str, bestemming: str) -> str:
+    """
+    Detect whether a trip is train or bus based on station name patterns.
+    
+    Bus stops typically contain a comma followed by additional location details.
+    Train stations are typically just the station name without commas.
+    
+    Args:
+        vertrek: Departure station name
+        bestemming: Destination station name
+        
+    Returns:
+        "Train", "Bus", "Metro", "Tram", or "Unknown"
+    """
+    vertrek_str = str(vertrek).strip() if vertrek else ""
+    bestemming_str = str(bestemming).strip() if bestemming else ""
+    
+    # Check if either station has a comma (typical bus stop pattern)
+    has_comma = "," in vertrek_str or "," in bestemming_str
+    
+    if has_comma:
+        return "Bus"
+    
+    # If no comma and names don't look empty, assume train
+    if vertrek_str and bestemming_str:
+        return "Train"
+    
+    return "Unknown"
+
+
 def merge_check_in_out_transactions(df: pd.DataFrame) -> pd.DataFrame:
     """
     Merge check-in and check-out transactions into complete trips.
 
     Each trip consists of a 'Check-in' row followed by a matching 'Check-uit' row
     on the same date and vertrek station. Incomplete trips remain included.
+    
+    Adds 'Type' column to identify trip type (Train/Bus/Metro/Tram) and
+    'Provider' column to identify the operator.
     """
     if df.empty:
         return pd.DataFrame()
@@ -103,17 +136,22 @@ def merge_check_in_out_transactions(df: pd.DataFrame) -> pd.DataFrame:
                 matching_idx = idx_out
                 break
 
+        bestemming = matching_check_out.get("Bestemming", "") if matching_check_out is not None else ""
+        trip_type = detect_trip_type(check_in_station, bestemming)
+        
         trip_data = {
             "Datum": check_in_date,
             "Vertrek": check_in_station,
             "Check-in_tijd": check_in_row.get("Check-in"),
-            "Bestemming": matching_check_out.get("Bestemming", "") if matching_check_out is not None else "",
+            "Bestemming": bestemming,
             "Check-uit_tijd": matching_check_out.get("Check-uit") if matching_check_out is not None else None,
             "Bedrag": matching_check_out.get("Bedrag", "") if matching_check_out is not None else check_in_row.get("Bedrag", ""),
             "Product": check_in_row.get("Product", ""),
             "Klasse": check_in_row.get("Klasse", ""),
             "Opmerkingen": check_in_row.get("Opmerkingen", ""),
             "Status": "Complete" if matching_check_out is not None else "Incomplete",
+            "Type": trip_type,
+            "Provider": identify_trip_provider(check_in_station, bestemming, trip_type),
         }
 
         for column in trips.columns:
@@ -128,17 +166,23 @@ def merge_check_in_out_transactions(df: pd.DataFrame) -> pd.DataFrame:
         if idx_out in used_check_outs:
             continue
 
+        vertrek = check_out_row.get("Vertrek", "")
+        bestemming = check_out_row.get("Bestemming", "")
+        trip_type = detect_trip_type(vertrek, bestemming)
+        
         trip_data = {
             "Datum": check_out_row.get("Datum"),
-            "Vertrek": check_out_row.get("Vertrek", ""),
+            "Vertrek": vertrek,
             "Check-in_tijd": None,
-            "Bestemming": check_out_row.get("Bestemming", ""),
+            "Bestemming": bestemming,
             "Check-uit_tijd": check_out_row.get("Check-uit"),
             "Bedrag": check_out_row.get("Bedrag", ""),
             "Product": check_out_row.get("Product", ""),
             "Klasse": check_out_row.get("Klasse", ""),
             "Opmerkingen": check_out_row.get("Opmerkingen", ""),
             "Status": "Incomplete (Check-out only)",
+            "Type": trip_type,
+            "Provider": identify_trip_provider(vertrek, bestemming, trip_type),
         }
 
         for column in trips.columns:
@@ -279,6 +323,7 @@ def build_trip_coordinate_dataframe(merged_trips: pd.DataFrame, stations: pd.Dat
 def aggregate_route_counts(trip_coordinates: pd.DataFrame) -> pd.DataFrame:
     """
     Aggregate routes and derive line styling metrics from route frequency.
+    Preserves trip Type for visualization styling.
     """
     result_columns = [
         "Vertrek",
@@ -290,6 +335,7 @@ def aggregate_route_counts(trip_coordinates: pd.DataFrame) -> pd.DataFrame:
         "trip_count",
         "line_weight",
         "line_opacity",
+        "Type",
     ]
 
     if trip_coordinates.empty:
@@ -307,6 +353,10 @@ def aggregate_route_counts(trip_coordinates: pd.DataFrame) -> pd.DataFrame:
             routes[column] = pd.NA
         routes[column] = pd.to_numeric(routes[column], errors="coerce")
 
+    # Ensure Type column exists
+    if "Type" not in routes.columns:
+        routes["Type"] = "Unknown"
+    
     valid_routes = routes[
         routes["Vertrek"].ne("") & routes["Bestemming"].ne("")
     ].dropna(subset=list(coord_columns))
@@ -314,11 +364,10 @@ def aggregate_route_counts(trip_coordinates: pd.DataFrame) -> pd.DataFrame:
     if valid_routes.empty:
         return pd.DataFrame(columns=result_columns)
 
+    # Group by route AND type
+    group_cols = ["Vertrek", "Bestemming", "vertrek_lat", "vertrek_lon", "bestemming_lat", "bestemming_lon", "Type"]
     route_counts = (
-        valid_routes.groupby(
-            ["Vertrek", "Bestemming", "vertrek_lat", "vertrek_lon", "bestemming_lat", "bestemming_lon"],
-            as_index=False,
-        )
+        valid_routes.groupby(group_cols, as_index=False)
         .size()
         .rename(columns={"size": "trip_count"})
     )
@@ -337,6 +386,7 @@ def build_route_line_segments(route_counts: pd.DataFrame) -> pd.DataFrame:
     result_columns = [
         "Vertrek",
         "Bestemming",
+        "Type",
         "trip_count",
         "source_lat",
         "source_lon",
@@ -358,6 +408,10 @@ def build_route_line_segments(route_counts: pd.DataFrame) -> pd.DataFrame:
         if column not in segments.columns:
             segments[column] = pd.NA
         segments[column] = pd.to_numeric(segments[column], errors="coerce")
+    
+    # Ensure Type exists
+    if "Type" not in segments.columns:
+        segments["Type"] = "Unknown"
 
     segments = segments.dropna(subset=["vertrek_lat", "vertrek_lon", "bestemming_lat", "bestemming_lon"]).copy()
     if segments.empty:
@@ -387,17 +441,35 @@ def build_route_line_segments(route_counts: pd.DataFrame) -> pd.DataFrame:
         axis=1,
     )
 
-    segments["line_color"] = segments.apply(
-        lambda row: [
-            int(40 + (row["trip_count"] / max_trip_count) * 180),
-            int(110 + (row["trip_count"] / max_trip_count) * 90),
-            int(220 - (row["trip_count"] / max_trip_count) * 120),
-            int(row["line_opacity"] * 255),
-        ],
-        axis=1,
-    )
+    # Color-code by trip type
+    def get_line_color_for_type(row):
+        trip_type = str(row.get("Type", "Unknown"))
+        opacity_val = int(row["line_opacity"] * 255)
+        
+        if trip_type == "Train":
+            # Blue shades for trains
+            intensity = int(40 + (row["trip_count"] / max_trip_count) * 180)
+            return [30, 100, 200 + intensity % 55, opacity_val]  # Blue
+        elif trip_type == "Bus":
+            # Orange/Red shades for buses
+            intensity = int(60 + (row["trip_count"] / max_trip_count) * 150)
+            return [220, 100 + intensity % 100, 40, opacity_val]  # Orange
+        elif trip_type == "Metro":
+            # Green shades for metro
+            return [50, 180, 100, opacity_val]
+        elif trip_type == "Tram":
+            # Yellow shades for tram
+            return [230, 200, 50, opacity_val]
+        else:
+            # Gray for unknown
+            return [100, 100, 100, opacity_val]
+    
+    segments["line_color"] = segments.apply(get_line_color_for_type, axis=1)
 
-    segments["tooltip_title"] = segments["Vertrek"].astype(str) + " → " + segments["Bestemming"].astype(str)
+    segments["tooltip_title"] = (
+        segments["Vertrek"].astype(str) + " → " + segments["Bestemming"].astype(str) +
+        " (" + segments["Type"].astype(str) + ")"
+    )
     segments["tooltip_subtitle"] = "Trips: " + segments["trip_count"].astype(int).astype(str)
 
     return segments[result_columns].sort_values(
@@ -930,6 +1002,181 @@ def get_stations() -> pd.DataFrame:
 
     except Exception as error:
         raise RuntimeError(f"Error loading local GTFS data: {error}") from error
+
+
+@_cache_data
+def get_gtfs_routes() -> pd.DataFrame:
+    """Load GTFS routes data with agency/operator information."""
+    try:
+        gtfs_routes_path = Path(__file__).resolve().parent / "gtfs-data" / "routes.txt"
+        if not gtfs_routes_path.exists():
+            return pd.DataFrame()
+        return pd.read_csv(gtfs_routes_path)
+    except Exception:
+        return pd.DataFrame()
+
+
+@_cache_data
+def get_gtfs_agencies() -> pd.DataFrame:
+    """Load GTFS agency/operator data."""
+    try:
+        gtfs_agency_path = Path(__file__).resolve().parent / "gtfs-data" / "agency.txt"
+        if not gtfs_agency_path.exists():
+            return pd.DataFrame()
+        return pd.read_csv(gtfs_agency_path)
+    except Exception:
+        return pd.DataFrame()
+
+
+@_cache_data
+def get_gtfs_shapes() -> pd.DataFrame:
+    """
+    Load GTFS shapes data.
+    
+    Note: This is a large dataset (6.8M rows). Loading is cached.
+    """
+    try:
+        gtfs_shapes_path = Path(__file__).resolve().parent / "gtfs-data" / "shapes.txt"
+        if not gtfs_shapes_path.exists():
+            return pd.DataFrame()
+        # Load with appropriate dtypes to reduce memory
+        return pd.read_csv(
+            gtfs_shapes_path,
+            dtype={
+                'shape_id': 'int32',
+                'shape_pt_sequence': 'int32',
+                'shape_pt_lat': 'float32',
+                'shape_pt_lon': 'float32',
+                'shape_dist_traveled': 'float32'
+            }
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+@_cache_data
+def get_gtfs_trips() -> pd.DataFrame:
+    """Load GTFS trips data linking routes to shapes."""
+    try:
+        gtfs_trips_path = Path(__file__).resolve().parent / "gtfs-data" / "trips.txt"
+        if not gtfs_trips_path.exists():
+            return pd.DataFrame()
+        return pd.read_csv(gtfs_trips_path)
+    except Exception:
+        return pd.DataFrame()
+
+
+@_cache_data
+def get_gtfs_stop_times() -> pd.DataFrame:
+    """
+    Load GTFS stop_times data.
+    
+    Note: This is a very large dataset (16.6M rows). Use with caution.
+    Consider filtering after loading.
+    """
+    try:
+        gtfs_stop_times_path = Path(__file__).resolve().parent / "gtfs-data" / "stop_times.txt"
+        if not gtfs_stop_times_path.exists():
+            return pd.DataFrame()
+        # Only load essential columns to reduce memory
+        return pd.read_csv(
+            gtfs_stop_times_path,
+            usecols=['trip_id', 'stop_id', 'stop_sequence'],
+            dtype={'trip_id': 'int64', 'stop_id': 'int32', 'stop_sequence': 'int16'}
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+def find_train_route_shape(vertrek_name: str, bestemming_name: str, stations_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Find the GTFS shape data for a train route between two stations.
+    
+    Due to the size of GTFS datasets (16.6M stop_times rows), this function
+    returns an empty DataFrame for now. The visualization will draw direct lines.
+    
+    Future enhancement: Pre-compute common routes or use a database for efficient lookups.
+    
+    Args:
+        vertrek_name: Departure station name
+        bestemming_name: Destination station name
+        stations_df: GTFS stations/stops DataFrame
+        
+    Returns:
+        DataFrame with shape points (lat, lon) in sequence, or empty DataFrame
+    """
+    # Placeholder for future implementation with indexed database
+    # When implemented, this would:
+    # 1. Find stop_ids for both stations
+    # 2. Query stop_times for trips connecting them
+    # 3. Get shape_id from trips table
+    # 4. Load shape points for that shape_id
+    # 5. Return ordered lat/lon points
+    return pd.DataFrame()
+
+
+def get_route_intermediate_points(vertrek_name: str, bestemming_name: str, 
+                                   vertrek_lat: float, vertrek_lon: float,
+                                   bestemming_lat: float, bestemming_lon: float,
+                                   trip_type: str) -> list[tuple[float, float]]:
+    """
+    Get intermediate points for a route to make it follow tracks/roads more realistically.
+    
+    For train routes, attempts to add waypoints. For bus routes, could use road routing APIs.
+    Currently returns direct line points.
+    
+    Args:
+        vertrek_name: Departure station
+        bestemming_name: Destination station  
+        vertrek_lat, vertrek_lon: Start coordinates
+        bestemming_lat, bestemming_lon: End coordinates
+        trip_type: Type of trip (Train/Bus/etc)
+        
+    Returns:
+        List of (lat, lon) tuples representing the route path
+    """
+    # For now, return direct line (two points)
+    # Future: Use GTFS shapes for trains, OpenStreetMap routing API for buses
+    return [(vertrek_lat, vertrek_lon), (bestemming_lat, bestemming_lon)]
+
+
+def identify_trip_provider(vertrek: str, bestemming: str, trip_type: str) -> str:
+    """
+    Attempt to identify the trip provider/operator from GTFS data.
+    
+    This is a best-effort heuristic based on station names and trip type.
+    For train trips, defaults to NS (Nederlandse Spoorwegen).
+    For bus trips, attempts to match against known bus operators.
+    
+    Args:
+        vertrek: Departure station
+        bestemming: Destination station
+        trip_type: Type of trip (Train/Bus/Metro/etc.)
+        
+    Returns:
+        Provider name or "Unknown"
+    """
+    if trip_type == "Train":
+        # Most train trips in Netherlands are NS
+        return "NS"
+    elif trip_type == "Bus":
+        # Try to extract city name from bus stop
+        vertrek_str = str(vertrek).strip()
+        if "," in vertrek_str:
+            city = vertrek_str.split(",")[0].strip()
+            # Map major cities to known operators (simplified heuristic)
+            city_lower = city.lower()
+            if "amsterdam" in city_lower or "amstelveen" in city_lower:
+                return "GVB"
+            elif "den haag" in city_lower or "'s-gravenhage" in city_lower:
+                return "HTM"
+            elif "rotterdam" in city_lower:
+                return "RET"
+            elif "utrecht" in city_lower:
+                return "U-OV"
+        return "Regional Bus"
+    
+    return "Unknown"
 
 
 if __name__ == "__main__":

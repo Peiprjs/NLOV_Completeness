@@ -20,16 +20,22 @@ if merged_trips.empty:
 
 st.success(f"Successfully merged transactions into {len(merged_trips)} trips.")
 
-stats_col1, stats_col2, stats_col3 = st.columns(3)
+stats_col1, stats_col2, stats_col3, stats_col4 = st.columns(4)
 stats_col1.metric("Total Trips", len(merged_trips))
 complete_trips = int((merged_trips["Status"] == "Complete").sum()) if "Status" in merged_trips.columns else 0
 stats_col2.metric("Complete Trips", complete_trips)
 stats_col3.metric("Incomplete Trips", len(merged_trips) - complete_trips)
 
+# Show trip type breakdown
+if "Type" in merged_trips.columns:
+    train_count = int((merged_trips["Type"] == "Train").sum())
+    bus_count = int((merged_trips["Type"] == "Bus").sum())
+    stats_col4.metric("Train/Bus", f"{train_count}/{bus_count}")
+
 st.dataframe(merged_trips, use_container_width=True)
 
 st.subheader("Trip Summary")
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 
 with col1:
     if "Status" in merged_trips.columns:
@@ -37,6 +43,11 @@ with col1:
         st.bar_chart(merged_trips["Status"].value_counts())
 
 with col2:
+    if "Type" in merged_trips.columns:
+        st.write("**Trips by Type:**")
+        st.bar_chart(merged_trips["Type"].value_counts())
+
+with col3:
     if "Vertrek" in merged_trips.columns:
         st.write("**Top Departure Stations:**")
         st.bar_chart(merged_trips["Vertrek"].astype(str).value_counts().head(10))

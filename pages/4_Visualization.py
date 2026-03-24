@@ -28,6 +28,16 @@ if merged_trips.empty:
     st.warning("No merged trips available for visualization.")
     st.stop()
 
+# Show trip type breakdown
+if "Type" in merged_trips.columns:
+    st.info(
+        "**Trip Types:** "
+        + " | ".join([
+            f"{trip_type}: {count}"
+            for trip_type, count in merged_trips["Type"].value_counts().items()
+        ])
+    )
+
 stations_df = st.session_state.get("stations_df")
 if not isinstance(stations_df, pd.DataFrame) or stations_df.empty:
     st.info("Load stations first in the Station Data page.")
@@ -60,7 +70,16 @@ if line_segments.empty or endpoint_markers.empty:
     st.warning("Not enough route data to render line segments and endpoint markers.")
     st.stop()
 
-st.write("Lines represent routes; thicker and more vivid lines indicate higher trip frequency.")
+# Color legend
+st.markdown("""
+**Map Legend:**  
+🔵 **Blue lines** = Train routes  
+🟠 **Orange lines** = Bus routes  
+🟢 **Green lines** = Metro routes  
+🟡 **Yellow lines** = Tram routes  
+
+*Line thickness and opacity indicate trip frequency.*
+""")
 
 all_lats = pd.concat([line_segments["source_lat"], line_segments["target_lat"]], ignore_index=True)
 all_lons = pd.concat([line_segments["source_lon"], line_segments["target_lon"]], ignore_index=True)
@@ -102,6 +121,13 @@ deck = pdk.Deck(
     },
 )
 st.pydeck_chart(deck, use_container_width=True)
+
+st.info(
+    "**Note:** Currently showing direct lines between stations. "
+    "GTFS shape data is available but requires additional optimization "
+    "to efficiently match trips to detailed route geometries. "
+    "Future enhancements will display routes following actual train tracks and roads."
+)
 
 st.subheader("Route Frequency Data")
 st.dataframe(route_counts, use_container_width=True)
